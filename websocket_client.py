@@ -1864,7 +1864,7 @@ if __name__ == "__main__":
     try:
         # TEST DE LOGGING
         logger.info("="*50)
-        logger.info("TEST DE LOGGING - SI VES ESTO, LOGS FUNCIONAN")
+        logger.info("LOGS DEL SISTEMA DE IMPRESION")
         logger.info(f"Archivo de log: {LOG_FILE}")
         logger.info("="*50)
         
