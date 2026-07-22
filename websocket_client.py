@@ -1592,7 +1592,7 @@ class SmartPrinterClient:
         try:
             data = json.loads(message)
             action = data.get('action') or data.get('type')
-            logger.info(f"Mensaje recibido del backend: {action}")
+            logger.info(f"Mensaje recibido: {action}")
             
             # Router de mensajes
             handlers = {
