@@ -1,0 +1,5 @@
+websockets>=11.0
+python-escpos>=3.0
+Pillow>=10.0
+qrcode>=7.4
+certifi

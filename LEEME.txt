@@ -1,0 +1,107 @@
+============================================================
+ SISTEMA DE IMPRESION - Instrucciones
+============================================================
+
+QUE ES ESTO
+-----------
+Un cliente que conecta esta PC/laptop con el backend en la nube
+y envia los tickets a las impresoras de la sucursal por red.
+
+Funciona igual en Windows y en Linux. En Windows usa por dentro
+una capa Linux (WSL2, funcion gratuita de Windows) porque se
+detecto que Windows solo, sin esta capa, falla al conectar con
+ciertas impresoras economicas de red -- Linux no tiene ese
+problema. Esto es invisible para quien use la PC: se ve y se
+siente igual que un programa normal de Windows.
+
+
+ANTES DE INSTALAR
+------------------
+1. Abre config.ini con el Bloc de notas (Notepad).
+2. Completa:
+     url        -> direccion del servidor (ws://... o wss://...)
+     api_key    -> API key de este dispositivo
+     branch_id  -> ID de la sucursal
+     device_id  -> ID del dispositivo
+3. Si esta sucursal necesita algo distinto en el formato de
+   impresion, puedes editar websocket_client.py tambien.
+4. Guarda los cambios.
+
+
+INSTALAR
+--------
+Windows:
+   Doble clic en  instalar.bat
+   (pedira permisos de administrador, es normal)
+   La primera vez descarga un componente base (~360MB) y puede
+   tardar varios minutos. Necesita internet solo para instalar.
+
+Linux:
+   Abre una terminal en esta carpeta y ejecuta:
+     sudo bash instalar.sh
+
+
+VER LOGS EN TIEMPO REAL (para saber si estan llegando los tickets)
+--------------------------------------------------------------
+Windows:
+   Doble clic en el icono del escritorio "Ver Logs - Sistema Impresion"
+   o en ver_logs.bat dentro de la carpeta instalada (C:\PrintServer)
+
+Linux:
+   bash ver_logs.sh
+
+
+SI CAMBIAS ALGO DESPUES DE INSTALAR
+------------------------------------
+Editaste config.ini (nueva URL, otra sucursal, etc.) o cambiaste
+el codigo de websocket_client.py? Aplica los cambios sin reinstalar:
+
+Windows:  edita los archivos aqui mismo (la carpeta original, la
+          que sea) y doble clic en reiniciar.bat -- copia los
+          cambios a C:\PrintServer y reinicia solo.
+Linux:    edita en /opt/printserver y ejecuta:
+          sudo bash reiniciar.sh
+
+
+ACTUALIZACION AUTOMATICA DESDE GITHUB (opcional)
+--------------------------------------------------
+Si subes websocket_client.py a un repositorio de GitHub, el
+sistema puede revisar solo cada cierto tiempo si hay una version
+nueva, descargarla y reiniciarse automaticamente -- sin tener que
+tocar cada PC uno por uno.
+
+Para activarlo, en config.ini, seccion [updates]:
+     auto_update = si     -> revisa y actualiza solo (default)
+     auto_update = no     -> esta sucursal tiene codigo propio,
+                             NUNCA se toca automaticamente
+     source_url  = (la URL "raw" del archivo en GitHub)
+     check_interval_minutes = cada cuantos minutos revisar
+
+Antes de reemplazar el archivo, guarda una copia de respaldo del
+anterior en la carpeta backups\ (Windows) o backups/ (Linux),
+por si hace falta volver atras.
+
+
+DESINSTALAR
+------------
+Windows:  doble clic en desinstalar.bat  (dentro de C:\PrintServer)
+Linux:    sudo bash desinstalar.sh       (dentro de /opt/printserver)
+
+
+UBICACION DESPUES DE INSTALAR
+-------------------------------
+Windows:  C:\PrintServer\
+Linux:    /opt/printserver/
+
+Ahi mismo quedan config.ini, websocket_client.py, logs\, y los
+mismos .bat/.sh para reiniciar, ver logs y desinstalar.
+
+
+REQUISITOS
+----------
+Windows: Windows 10 (build 18362 / version 2004 o superior),
+         Windows 11, o Windows 10 LTSC 2021.
+         *** Windows 10 LTSC 2019 NO es compatible ***
+         (no soporta WSL2 sin actualizaciones manuales).
+Linux:   Cualquier distribucion con systemd (Ubuntu, Debian,
+         Raspberry Pi OS, etc.)
