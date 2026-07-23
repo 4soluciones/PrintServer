@@ -1351,6 +1351,103 @@ class SmartPrinterClient:
                 except:
                     pass
 
+    async def print_expenses_report(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
+        """
+        Imprime la lista de egresos activos (no anulados) de un cierre de caja,
+        agrupados por metodo de pago con subtotal por metodo y total general.
+        """
+        printer = None
+        try:
+            printer = self.init_printer(ip, port)
+
+            if data.get('logo_base64'):
+                try:
+                    await self.print_logo_reduced(printer, data['logo_base64'], paper_width)
+                except:
+                    pass
+
+            branch = data.get('branch', {})
+            self.safe_print_text(printer, clean_text(branch.get('company', '')), bold=True, align='center')
+            self.safe_print_text(printer, clean_text(branch.get('name', '')), align='center')
+            if branch.get('ruc'):
+                self.safe_print_text(printer, f"RUC: {clean_text(branch['ruc'])}", align='center')
+
+            self.safe_print_text(printer, "=" * 48, align='center')
+            self.safe_print_text(printer, "LISTA DE EGRESOS",
+                            bold=True, double_height=True, align='center')
+
+            closure = data.get('closure', {})
+            closure_num = closure.get('number', 0)
+            self.safe_print_text(printer, f"CIERRE #{closure_num}", bold=True, align='center')
+            self.safe_print_text(printer, "=" * 48, align='center')
+
+            user = data.get('user', {})
+            self.safe_print_text(printer, f"Cajero: {clean_text(user.get('name', ''))}", bold=True, align='left')
+
+            cash_register = data.get('cash_register', {})
+            self.safe_print_text(printer, f"Caja  : {clean_text(cash_register.get('name', ''))}", align='left')
+
+            self.safe_print_text(printer, "-" * 48, align='left')
+            closed_at = clean_text(closure.get('closed_at', ''))
+            self.safe_print_text(printer, f"Fecha: {closed_at}", align='left')
+            self.safe_print_text(printer, "=" * 48, align='left')
+
+            expenses_by_method = data.get('expenses_by_method', [])
+
+            if not expenses_by_method:
+                self.safe_print_text(printer, "Sin egresos registrados", align='center')
+
+            for method_code, method_data in expenses_by_method:
+                method_name = clean_text(method_data.get('name', method_code))
+                total = method_data.get('total', 0)
+                items = method_data.get('items', [])
+
+                printer._raw(b'\n')
+                self.safe_print_text(printer, f">>> {method_name} <<<", bold=True, align='left')
+                self.safe_print_text(printer, "-" * 48, align='left')
+
+                for item in items:
+                    desc = clean_text(item.get('description', 'Egreso'))
+                    amount = item.get('amount', 0)
+                    time_str = clean_text(item.get('time', ''))
+                    line = f"{time_str}  {desc[:30]:<30} S/ {amount:>7.2f}"
+                    printer._raw(line.encode('cp850', errors='replace'))
+                    printer._raw(b'\n')
+                    if item.get('reference'):
+                        self.safe_print_text(printer, f"   Ref: {clean_text(item['reference'])[:38]}", align='left')
+
+                self.safe_print_text(printer, "-" * 48, align='left')
+                self.safe_print_text(printer, f"Subtotal {method_name}: S/ {total:.2f}", bold=True, align='right')
+                printer._raw(b'\n')
+
+            total_expense = data.get('total_expense', 0)
+            self.safe_print_text(printer, "=" * 48, align='center')
+            self.safe_print_text(printer, "TOTAL EGRESOS:", bold=True, double_height=True, align='center')
+            self.safe_print_text(printer, f"S/ {total_expense:.2f}", bold=True, double_height=True, align='center')
+            self.safe_print_text(printer, "=" * 48, align='center')
+
+            time_str = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+            self.safe_print_text(printer, f"Impreso: {time_str}", align='center')
+
+            import time
+            printer._raw(b'\x1B\x64\x05')
+            time.sleep(0.20)
+            printer._raw(b'\x1D\x56\x01')
+            time.sleep(0.15)
+
+            logger.info(f"✅ Lista de egresos del cierre #{closure_num} impresa")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error imprimiendo egresos: {e}", exc_info=True)
+            return False
+        finally:
+            if printer:
+                try:
+                    printer.close()
+                except:
+                    pass
+
     async def print_payment_ticket(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
         """Imprime ticket de movimiento de caja (ingreso, egreso, compra, venta)"""
         printer = None
@@ -1701,6 +1798,11 @@ class SmartPrinterClient:
                  success = await self.print_payment_ticket(
                      printer_ip, printer_port, ticket_data, paper_width
                  )
+            elif ticket_type == 'EXPENSES':
+                logger.info("   📋 LISTA DE EGRESOS")
+                success = await self.print_expenses_report(
+                    printer_ip, printer_port, ticket_data, paper_width
+                )
             else:
                 success = await self.print_generic_ticket(
                     printer_ip, printer_port, ticket_data, paper_width
