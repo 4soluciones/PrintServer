@@ -215,6 +215,10 @@ Write-Ok "Acceso directo creado en el escritorio: 'Ver Logs - Sistema Impresion'
 # 10) Iniciar el servicio ahora mismo (sin esperar reinicio)
 # ------------------------------------------------------------
 Write-Step "Iniciando el sistema de impresion..."
+# Si esto es una reinstalacion/actualizacion, mata cualquier proceso viejo
+# dentro de WSL antes de arrancar (schtasks/Stop-ScheduledTask no lo hace).
+wsl.exe -d $DistroName -u root -- pkill -f websocket_client.py 2>$null
+Start-Sleep -Seconds 1
 Start-ScheduledTask -TaskName $TaskName
 Start-Sleep -Seconds 3
 Write-Ok "Sistema iniciado"

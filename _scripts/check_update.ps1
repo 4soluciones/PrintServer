@@ -8,6 +8,7 @@ $InstallDir  = "C:\PrintServer"
 $ConfigFile  = "$InstallDir\config.ini"
 $TargetFile  = "$InstallDir\websocket_client.py"
 $TaskName    = "PrintServer"
+$DistroName  = "PrintServerLinux"
 $LogDir      = "$InstallDir\logs"
 $LogFile     = "$LogDir\updater.log"
 $MinValidBytes = 10KB
@@ -81,6 +82,11 @@ Log "Archivo actualizado correctamente."
 
 $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($existingTask) {
+    # IMPORTANTE: Stop-ScheduledTask/schtasks /End solo mata el lanzador de
+    # Windows (powershell/wsl.exe), NO el proceso python real que corre
+    # dentro de la VM de WSL2 -- queda huerfano con el codigo viejo en
+    # memoria. Hay que matarlo explicitamente dentro de la distro.
+    wsl.exe -d $DistroName -u root -- pkill -f websocket_client.py 2>$null
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
     Start-ScheduledTask -TaskName $TaskName

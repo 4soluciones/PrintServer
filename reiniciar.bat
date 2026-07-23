@@ -28,6 +28,10 @@ if /I not "%SOURCE_DIR%"=="%INSTALL_DIR%\" (
 )
 
 echo Reiniciando el sistema de impresion (aplica cambios de config.ini o del codigo)...
+rem IMPORTANTE: schtasks /End no mata el proceso Python real dentro de WSL2,
+rem solo el lanzador de Windows. Hay que matarlo explicitamente o el
+rem proceso viejo (con el codigo viejo en memoria) sigue corriendo.
+wsl.exe -d PrintServerLinux -u root -- pkill -f websocket_client.py >nul 2>&1
 schtasks /End /TN "PrintServer" >nul 2>&1
 timeout /t 2 /nobreak >nul
 schtasks /Run /TN "PrintServer"
