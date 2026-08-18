@@ -521,83 +521,98 @@ class SmartPrinterClient:
                 printer._raw(b'\n')
             
             # ENCABEZADO - Categoría
-            category_name = clean_text(data.get('category', {}).get('name', 'ORDEN'))
-            self.safe_print_text(printer, f"*** {category_name} ***", 
-                               bold=True, double_height=True, align='center')
-            
-            # Información de la orden
-            order_num = clean_text(order_info.get('number', ''))
-            order_date = clean_text(order_info.get('date', ''))
-            order_time = clean_text(order_info.get('time', ''))
-            
-            self.safe_print_text(printer, f"{order_num}  {order_date} {order_time}", 
-                               align='center')
-            
-            # LÍNEA SEPARADORA
-            self.safe_print_text(printer, "="*40, align='center')
-            
-            # MESA Y MESERO
+            # category_name = clean_text(data.get('category', {}).get('name', 'ORDEN'))
+            # self.safe_print_text(printer, f"*** {category_name} ***", bold=True, double_height=True, align='center')
+
+            # MESA Y PISO (encabezado, arriba de todo)
             table = clean_text(order_info.get('table', 'PARA LLEVAR'))
             # Piso (nombre del piso/planta según backend)
             floor = order_info.get('floor') or order_info.get('floor_name') or ''
+            floor = clean_text(floor) if floor else ''
             waiter = clean_text(order_info.get('waiter', ''))
-            mesa_line = f"MESA: {table}"
+            mesa_header = f"{floor}"
             if floor:
-                mesa_line += f" -> PISO: {clean_text(floor)}"
-            self.safe_print_text(printer, mesa_line, bold=True, align='left')
-           
+                mesa_header += f" - {table}"
+            self.safe_print_text(printer, mesa_header.upper(), bold=True, double_height=True, align='center')
+
+            # LÍNEA SEPARADORA
+            self.safe_print_text(printer, "="*40, align='center')
+
+            # NÚMERO DE ORDEN
+            order_num = clean_text(order_info.get('number', ''))
+            order_date = clean_text(order_info.get('date', ''))
+            order_time = clean_text(order_info.get('time', ''))
+
+            self.safe_print_text(printer, f"NRO : {order_num.replace('OP:', '').strip()}", bold=True, double_height=True, align='center')
+            printer._raw(b'\n')
+
+            # FECHA Y HORA
+            self.safe_print_text(printer, f"FECHA: {order_date}   HORA: {order_time}", bold=True, align='left')
+
             if waiter:
-                self.safe_print_text(printer, f"MESERO: {waiter}", bold=True, align='left')     
-            
+                self.safe_print_text(printer, f"MESERO: {waiter}", bold=True, align='left')
+
             # Servicio si existe
             if order_info.get('service_type'):
                 service = clean_text(order_info.get('service_type'))
-                self.safe_print_text(printer, f"Servicio: {service}", align='left')
-            
+                self.safe_print_text(printer, f"Servicio: {service}", bold=True, align='left')
+
             # LÍNEA SEPARADORA
-            self.safe_print_text(printer, "-"*40, align='center')
-            
+            self.safe_print_text(printer, "-"*48, align='center')
+
+            # ENCABEZADO DE COLUMNAS
+            CANT_WIDTH = 5
+            self.safe_print_text(printer, ("CANT".ljust(CANT_WIDTH + 20) + "DESCRIPCION").upper(),
+                               bold=True, align='left')
+
+            # LÍNEA SEPARADORA
+            self.safe_print_text(printer, "-"*48, align='center')
+
             # ITEMS DE LA CATEGORÍA
             items = data.get('items', [])
             item_number = 1
-            
+
             for item in items:
                 qty = item.get('quantity', 1)
                 product = clean_text(item.get('product_name', ''))
-                
+
                 # Verificar si el item es reimpresión
-                if item.get('is_reprint'):
-                    self.safe_print_text(printer, "(REIMPRESION)", align='right')
-                
-                # PLATO
-                self.safe_print_text(printer, f"PLATO {item_number}: {qty:.0f}X {product}", 
+                # if item.get('is_reprint'):
+                #     self.safe_print_text(printer, "(REIMPRESION)", align='right')
+
+                # CANT + DESCRIPCION
+                qty_str = f"{qty:.0f}".ljust(CANT_WIDTH)
+                self.safe_print_text(printer, f"{qty_str}{product}",
                                    bold=True, double_height=True, align='left')
-                
-                # NOTA si existe
+
+                # NOTA si existe (alineada bajo la columna DESCRIPCION)
                 if item.get('notes'):
                     notes = clean_text(item['notes'])
                     notes = notes.upper()
-                    self.safe_print_text(printer, f"NOTA   : {notes}", align='left')
-                
+                    self.safe_print_text(printer, f"{' ' * CANT_WIDTH}NOTA : {notes}", align='left')
+
                 # Línea separadora entre platos
-                if item_number < len(items):
-                    self.safe_print_text(printer, "-"*40, align='center')
-                
+                # if item_number < len(items):
+                #     self.safe_print_text(printer, "-"*40, align='center')
+
                 item_number += 1
-            
+
             # LÍNEA SEPARADORA DOBLE
-            self.safe_print_text(printer, "="*40, align='center')
-            
+            self.safe_print_text(printer, "="*48, align='center')
+
             # NOTAS GENERALES si existen
             if data.get('notes'):
                 notes = clean_text(data['notes'])
                 self.safe_print_text(printer, f"NOTAS: {notes}", bold=True, align='left')
                 self.safe_print_text(printer, "-"*40, align='center')
-            
-            # PIE - Hora de impresión
-            time_str = datetime.now().strftime('%H:%M:%S')
-            self.safe_print_text(printer, f"IMPRESO: {time_str}", align='center')
-            
+
+            # PIE - Repite PISO/MESA para identificar el ticket
+            mesa_footer = f"*** {floor}"
+            if floor:
+                mesa_footer += f" - {table}"
+            mesa_footer += " ***"
+            self.safe_print_text(printer, mesa_footer.upper(), bold=True, align='center')
+
             # Si es adicional, agregar nota al final
             if is_additional:
                 self.safe_print_text(printer, "** ADICIONAL **", bold=True, align='center')

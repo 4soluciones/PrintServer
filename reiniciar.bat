@@ -30,10 +30,28 @@ if /I not "%SOURCE_DIR%"=="%INSTALL_DIR%\" (
 echo Reiniciando el sistema de impresion (aplica cambios de config.ini o del codigo)...
 rem IMPORTANTE: schtasks /End no mata el proceso Python real dentro de WSL2,
 rem solo el lanzador de Windows. Hay que matarlo explicitamente o el
-rem proceso viejo (con el codigo viejo en memoria) sigue corriendo.
-wsl.exe -d PrintServerLinux -u root -- pkill -f websocket_client.py >nul 2>&1
+rem proceso viejo (con el codigo viejo en memoria) sigue corriendo y puede
+rem quedar unos segundos conectado en paralelo al nuevo (misma sesion en el
+rem servidor), imprimiendo con el formato antiguo. Por eso se fuerza con -9
+rem y se espera activamente a que el proceso realmente muera antes de
+rem lanzar el nuevo, en vez de un timeout fijo que no lo garantiza.
+wsl.exe -d PrintServerLinux -u root -- pkill -9 -f websocket_client.py >nul 2>&1
 schtasks /End /TN "PrintServer" >nul 2>&1
-timeout /t 2 /nobreak >nul
+
+set "INTENTOS=0"
+:esperar_muerte
+wsl.exe -d PrintServerLinux -u root -- pgrep -f websocket_client.py >nul 2>&1
+if %errorLevel% equ 0 (
+    set /a INTENTOS+=1
+    if %INTENTOS% GEQ 10 (
+        echo ADVERTENCIA: el proceso anterior no murio tras varios intentos, continuando de todas formas...
+        goto seguir_reinicio
+    )
+    timeout /t 1 /nobreak >nul
+    goto esperar_muerte
+)
+
+:seguir_reinicio
 schtasks /Run /TN "PrintServer"
 if %errorLevel% equ 0 (
     echo.

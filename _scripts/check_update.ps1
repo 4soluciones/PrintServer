@@ -85,10 +85,24 @@ if ($existingTask) {
     # IMPORTANTE: Stop-ScheduledTask/schtasks /End solo mata el lanzador de
     # Windows (powershell/wsl.exe), NO el proceso python real que corre
     # dentro de la VM de WSL2 -- queda huerfano con el codigo viejo en
-    # memoria. Hay que matarlo explicitamente dentro de la distro.
-    wsl.exe -d $DistroName -u root -- pkill -f websocket_client.py 2>$null
+    # memoria y puede quedar unos segundos conectado en paralelo al nuevo
+    # proceso (mismo canal en el backend), imprimiendo con el codigo viejo.
+    # Por eso se fuerza con -9 y se espera activamente a que muera antes de
+    # lanzar el nuevo, en vez de un Start-Sleep fijo que no lo garantiza.
+    wsl.exe -d $DistroName -u root -- pkill -9 -f websocket_client.py 2>$null
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
+
+    $intentos = 0
+    while ($intentos -lt 10) {
+        wsl.exe -d $DistroName -u root -- pgrep -f websocket_client.py 2>$null 1>$null
+        if ($LASTEXITCODE -ne 0) { break }
+        $intentos++
+        Start-Sleep -Seconds 1
+    }
+    if ($intentos -ge 10) {
+        Log "ADVERTENCIA: el proceso anterior no murio tras varios intentos, continuando de todas formas."
+    }
+
     Start-ScheduledTask -TaskName $TaskName
     Log "Sistema de impresion reiniciado con la nueva version."
 }
