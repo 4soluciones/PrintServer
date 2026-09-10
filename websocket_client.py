@@ -871,9 +871,19 @@ class SmartPrinterClient:
             if data.get('waiter'):
                 waiter = clean_text(data['waiter'])
                 self.safe_print_text(printer, f"Atendido por: {waiter}", align='left')
-            
+
+            # Motorizado: en cabecera de los 3 documentos (factura/boleta/nota de venta), solo si se registró
+            if data.get('driver'):
+                driver = clean_text(data['driver'])
+                self.safe_print_text(printer, f"Motorizado: {driver}", align='left')
+
+            # Observación: en los 3 documentos (Factura/Boleta/Nota de Venta), solo si existe
+            if data.get('notes'):
+                obs = clean_text(data['notes'])
+                self.safe_print_text(printer, f"Obs: {obs}", align='left')
+
             self.safe_print_text(printer, "=" * 48, align='left')
-            
+
             # ENCABEZADO DE ITEMS MEJORADO
             # Ajustado para papel de 48 caracteres
             header = "CANT  DESCRIPCION                P.UNIT   TOTAL"
