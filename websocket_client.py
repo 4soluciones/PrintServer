@@ -29,6 +29,7 @@ import inspect
 import ssl
 import certifi
 from urllib.parse import urlparse
+from collections import OrderedDict
 
 # ========================================
 # DIRECTORIO BASE — funciona en .py y .exe (PyInstaller)
@@ -90,8 +91,17 @@ except OSError:
 # ========================================
 HEARTBEAT_BASE_INTERVAL = 25
 CONNECTION_TIMEOUT = 120
-RECONNECT_DELAY = 10 + random.randint(0, 15)
+# Reconexión rápida: antes 10-25s base con tope de backoff en 60s -- un corte
+# de red de unos segundos tardaba hasta un minuto en recuperarse. Con esto,
+# un corte breve se recupera en 2-5s y el peor caso (fallas repetidas) queda
+# acotado a 20s en vez de 60s.
+RECONNECT_DELAY = 2 + random.randint(0, 3)
+RECONNECT_DELAY_MAX = 20
 MAX_RECONNECT_ATTEMPTS = 0
+
+# Tamaño del set de job_id recientes para no reimprimir un trabajo que el
+# backend reenvíe (p.ej. por no haber recibido confirmación a tiempo).
+RECENT_JOB_IDS_MAXLEN = 200
 
 # ========================================
 # LOGGING — ruta multiplataforma
@@ -214,9 +224,20 @@ class SmartPrinterClient:
         self.running = True
         self.authenticated = False
         self.connection_attempts = 0
-        self.last_ping_time = None  
-        self.printers_with_beep = {} 
-        
+        self.last_ping_time = None
+        self.printers_with_beep = {}
+
+        # ✅ COLA + WORKER POR IMPRESORA (ip:port) — evita que la impresión
+        # (bloqueante) congele el event loop (pings/heartbeat/otros mensajes)
+        # y evita que una impresora trabada bloquee a las demás. Cada worker
+        # se crea una sola vez, la primera vez que se usa esa impresora.
+        self.printer_queues: Dict[str, asyncio.Queue] = {}
+        self.printer_workers: Dict[str, asyncio.Task] = {}
+
+        # ✅ DEDUP DE job_id — evita reimprimir un trabajo que el backend
+        # reenvíe (p.ej. por no haber recibido confirmación a tiempo).
+        self._recent_job_ids: "OrderedDict[str, None]" = OrderedDict()
+
         # AGREGAR ESTOS LOGS PARA DEBUG
         logger.info("="*50)
         logger.info("INICIANDO CLIENTE DE IMPRESIÓN")
@@ -260,6 +281,137 @@ class SmartPrinterClient:
             return self.websocket.close_code is None
         except:
             return False
+
+    def _is_duplicate_job(self, job_id: str) -> bool:
+        """
+        True si este job_id ya fue procesado recientemente (el backend lo
+        reenvió, p.ej. por no recibir confirmación a tiempo). Sin job_id no
+        hay forma de deduplicar, así que se deja pasar.
+        """
+        if not job_id or job_id == 'unknown':
+            return False
+        if job_id in self._recent_job_ids:
+            self._recent_job_ids.move_to_end(job_id)
+            return True
+        self._recent_job_ids[job_id] = None
+        if len(self._recent_job_ids) > RECENT_JOB_IDS_MAXLEN:
+            self._recent_job_ids.popitem(last=False)
+        return False
+
+    def _get_printer_queue(self, ip: str, port: int) -> "asyncio.Queue":
+        """
+        Devuelve la cola de trabajos de una impresora, creando la cola y su
+        worker (una tarea persistente que imprime en orden, uno a la vez)
+        la primera vez que se usa esa impresora.
+        """
+        key = f"{ip}:{port}"
+        queue = self.printer_queues.get(key)
+        if queue is None:
+            queue = asyncio.Queue()
+            self.printer_queues[key] = queue
+            self.printer_workers[key] = asyncio.create_task(self._printer_worker(key, queue))
+            logger.info(f"🖨️ Worker creado para impresora {key}")
+        return queue
+
+    async def _printer_worker(self, key: str, queue: "asyncio.Queue"):
+        """
+        Consume trabajos de UNA impresora en orden, uno a la vez. Corre
+        mientras el cliente esté vivo (self.running), sin importar
+        desconexiones del WebSocket -- si el trabajo ya está en la cola, se
+        imprime igual y el estado se reporta cuando la conexión vuelva.
+        """
+        logger.info(f"▶️ Worker de impresora {key} iniciado")
+        while self.running:
+            job = await queue.get()
+            try:
+                await self._execute_print_job(job, key)
+            except Exception as e:
+                logger.error(f"❌ Worker {key}: error inesperado procesando job: {e}", exc_info=True)
+            finally:
+                queue.task_done()
+        logger.info(f"⏹️ Worker de impresora {key} detenido")
+
+    async def _execute_print_job(self, data: Dict[str, Any], printer_key: str):
+        """
+        Ejecuta un trabajo de impresión (bloqueante) en un hilo aparte, para
+        no congelar el event loop mientras imprime, y reporta el resultado.
+        Esta es la lógica que antes vivía directamente en handle_print_job.
+        """
+        start = time.monotonic()
+        printer_info = data.get('printer', {})
+        printer_ip = printer_info.get('ip')
+        printer_port = printer_info.get('port', 9100)
+        printer_name = printer_info.get('name', 'Desconocida')
+        paper_width = printer_info.get('paper_width', 80)
+
+        ticket_data = data.get('data', {})
+        ticket_type = ticket_data.get('type', 'ORDEN')
+        job_id = data.get('job_id', 'unknown')
+        open_drawer = data.get('open_drawer', False)
+
+        order_info = ticket_data.get('order', {})
+        is_additional = order_info.get('is_additional', False)
+        is_reprint = order_info.get('is_reprint', False)
+
+        logger.info("=" * 40)
+        logger.info(f"📥 TRABAJO DE IMPRESIÓN [{printer_key}]")
+        logger.info(f"   Tipo: {ticket_type}")
+        logger.info(f"   Job ID: {job_id}")
+        if is_additional:
+            logger.info("   ⭐ PEDIDO ADICIONAL")
+        elif is_reprint:
+            logger.info("   🔄 REIMPRESIÓN")
+
+        try:
+            # ✅ Todas las print_* son funciones bloqueantes normales (no
+            # async): se ejecutan en un hilo aparte con asyncio.to_thread
+            # para no congelar el event loop (pings, heartbeat, otros
+            # mensajes) mientras se imprime.
+            if ticket_type == 'CATEGORY_CANCELLED':
+                success = await asyncio.to_thread(
+                    self.print_category_cancelled_ticket, printer_ip, printer_port, ticket_data, paper_width
+                )
+            elif ticket_type == 'CATEGORY':
+                success = await asyncio.to_thread(
+                    self.print_category_ticket, printer_ip, printer_port, ticket_data, paper_width
+                )
+            elif ticket_type in ['PRECUENTA', 'CUENTA', 'BOLETA', 'FACTURA', 'NOTA DE VENTA']:
+                success = await asyncio.to_thread(
+                    self.print_document, printer_ip, printer_port, ticket_data, paper_width, open_drawer
+                )
+            elif ticket_type == 'CASH_CLOSURE':
+                success = await asyncio.to_thread(
+                    self.print_cash_closure, printer_ip, printer_port, ticket_data, paper_width
+                )
+            elif ticket_type == 'PAYMENT':
+                success = await asyncio.to_thread(
+                    self.print_payment_ticket, printer_ip, printer_port, ticket_data, paper_width
+                )
+            elif ticket_type == 'EXPENSES':
+                success = await asyncio.to_thread(
+                    self.print_expenses_report, printer_ip, printer_port, ticket_data, paper_width
+                )
+            elif ticket_type == 'EXPENSES_RANGE':
+                success = await asyncio.to_thread(
+                    self.print_expenses_range_report, printer_ip, printer_port, ticket_data, paper_width
+                )
+            else:
+                success = await asyncio.to_thread(
+                    self.print_generic_ticket, printer_ip, printer_port, ticket_data, paper_width
+                )
+
+            elapsed = time.monotonic() - start
+            await self.send_print_status(job_id, success, printer_name)
+            if success:
+                logger.info(f"✅ IMPRESIÓN EXITOSA [{printer_key}] en {elapsed:.1f}s")
+            else:
+                logger.error(f"❌ IMPRESIÓN FALLIDA [{printer_key}] en {elapsed:.1f}s")
+            logger.info("=" * 40)
+
+        except Exception as e:
+            elapsed = time.monotonic() - start
+            logger.error(f"❌ Error en _execute_print_job [{printer_key}] tras {elapsed:.1f}s: {e}", exc_info=True)
+            await self.send_print_status(job_id, False, printer_name, str(e))
 
     def init_printer(self, ip: str, port: int = 9100, max_retries: int = 25, retry_interval: float = 3.0) -> Network:
         """
@@ -487,7 +639,7 @@ class SmartPrinterClient:
             logger.error(f"❌ Error conectando: {e}")
             return False
 
-    async def print_category_ticket(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
+    def print_category_ticket(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
         """
         Imprime ticket de categoría - VERSIÓN MEJORADA
         """
@@ -649,7 +801,7 @@ class SmartPrinterClient:
                 except Exception as e:
                     logger.error(f"⚠️ Error cerrando impresora: {e}")
    
-    async def print_category_cancelled_ticket(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
+    def print_category_cancelled_ticket(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
         """
         Imprime ticket de ITEMS CANCELADOS o OPERACIÓN ANULADA
         Similar a print_category_ticket pero con formato de CANCELACIÓN
@@ -786,7 +938,7 @@ class SmartPrinterClient:
                 except Exception as e:
                     logger.error(f"⚠️ Error cerrando impresora: {e}")
 
-    async def print_document(self, ip: str, port: int, data: Dict, paper_width: int, open_drawer: bool = False) -> bool:
+    def print_document(self, ip: str, port: int, data: Dict, paper_width: int, open_drawer: bool = False) -> bool:
         """
         Imprime documentos (precuenta, cuenta, boleta, factura) - VERSIÓN MEJORADA
         Con logo reducido, precios alineados y logging completo
@@ -803,7 +955,7 @@ class SmartPrinterClient:
             # Logo si existe - REDUCIDO Y CENTRADO
             if data.get('logo_base64'):
                 try:
-                    await self.print_logo_reduced(printer, data['logo_base64'], paper_width)
+                    self.print_logo_reduced(printer, data['logo_base64'], paper_width)
                 except:
                     logger.warning("No se pudo imprimir el logo")
             
@@ -1002,7 +1154,7 @@ class SmartPrinterClient:
                     logger.info(f"   qr_data encontrado: {data.get('qr_data')}")
                     logger.info(f"   paper_width: {paper_width}")
                     logger.info("="*60)
-                    await self.print_qr_reduced(printer, data['qr_data'], paper_width)  # ✅ AGREGAR paper_width
+                    self.print_qr_reduced(printer, data['qr_data'], paper_width)  # ✅ AGREGAR paper_width
                     logger.info("✅ Retorno exitoso de print_qr_reduced")
                 except Exception as e:
                     logger.warning(f"No se pudo imprimir el código QR: {e}")
@@ -1043,7 +1195,7 @@ class SmartPrinterClient:
                 except Exception as e:
                     logger.error(f"⚠️ Error cerrando: {e}")
 
-    async def print_logo_reduced(self, printer: Network, logo_base64: str, paper_width: int):
+    def print_logo_reduced(self, printer: Network, logo_base64: str, paper_width: int):
         """Imprime logo desde base64 - VERSIÓN CENTRADA MANUAL"""
         try:
             # Decodificar imagen
@@ -1097,7 +1249,7 @@ class SmartPrinterClient:
         except Exception as e:
             logger.error(f"Error imprimiendo logo: {e}")
     
-    async def print_qr_reduced(self, printer: Network, qr_data: str, paper_width: int = 80):
+    def print_qr_reduced(self, printer: Network, qr_data: str, paper_width: int = 80):
         """
         Imprime código QR usando comandos NATIVOS de la impresora
         Esto es más rápido y confiable que enviar una imagen
@@ -1172,7 +1324,7 @@ class SmartPrinterClient:
             # Fallback: Intentar método alternativo simplificado
             try:
                 logger.info("🔄 Intentando método alternativo...")
-                await self._print_qr_fallback(printer, qr_data)
+                self._print_qr_fallback(printer, qr_data)
             except Exception as e2:
                 logger.error(f"❌ Fallback también falló: {e2}")
                 # Último recurso: solo texto
@@ -1184,7 +1336,7 @@ class SmartPrinterClient:
                 except:
                     pass
 
-    async def _print_qr_fallback(self, printer: Network, qr_data: str):
+    def _print_qr_fallback(self, printer: Network, qr_data: str):
         """
         Método alternativo usando imagen pequeña con chunks
         """
@@ -1250,7 +1402,7 @@ class SmartPrinterClient:
             logger.error(f"❌ Error en fallback: {e}")
             raise
 
-    async def print_cash_closure(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
+    def print_cash_closure(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
         """
         Imprime cierre de caja
         """
@@ -1260,7 +1412,7 @@ class SmartPrinterClient:
             # ========== ENCABEZADO ==========
             if data.get('logo_base64'):
                 try:
-                    await self.print_logo_reduced(printer, data['logo_base64'], paper_width)
+                    self.print_logo_reduced(printer, data['logo_base64'], paper_width)
                 except:
                     pass
             
@@ -1376,7 +1528,7 @@ class SmartPrinterClient:
                 except:
                     pass
 
-    async def print_expenses_report(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
+    def print_expenses_report(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
         """
         Imprime la lista de egresos activos (no anulados) de un cierre de caja,
         agrupados por metodo de pago con subtotal por metodo y total general.
@@ -1387,7 +1539,7 @@ class SmartPrinterClient:
 
             if data.get('logo_base64'):
                 try:
-                    await self.print_logo_reduced(printer, data['logo_base64'], paper_width)
+                    self.print_logo_reduced(printer, data['logo_base64'], paper_width)
                 except:
                     pass
 
@@ -1473,7 +1625,7 @@ class SmartPrinterClient:
                 except:
                     pass
 
-    async def print_expenses_range_report(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
+    def print_expenses_range_report(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
         """
         Imprime un listado unico de TODOS los egresos de una sucursal en un
         rango de fechas, agrupados por metodo de pago con subtotal y total
@@ -1487,7 +1639,7 @@ class SmartPrinterClient:
 
             if data.get('logo_base64'):
                 try:
-                    await self.print_logo_reduced(printer, data['logo_base64'], paper_width)
+                    self.print_logo_reduced(printer, data['logo_base64'], paper_width)
                 except:
                     pass
 
@@ -1571,7 +1723,7 @@ class SmartPrinterClient:
                 except:
                     pass
 
-    async def print_payment_ticket(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
+    def print_payment_ticket(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
         """Imprime ticket de movimiento de caja (ingreso, egreso, compra, venta)"""
         printer = None
         try:
@@ -1587,7 +1739,7 @@ class SmartPrinterClient:
 
             if data.get('logo_base64'):
                 try:
-                    await self.print_logo_reduced(printer, data['logo_base64'], paper_width)
+                    self.print_logo_reduced(printer, data['logo_base64'], paper_width)
                 except:
                     pass
 
@@ -1628,51 +1780,53 @@ class SmartPrinterClient:
                 except:
                     pass
 
-    async def handle_test_print(self, data: Dict):
-        """Imprime página de prueba con configuración robusta"""
+    def _print_test_page(self, printer_ip: str, printer_port: int):
+        """Cuerpo bloqueante de la página de prueba (corre en un hilo aparte)."""
+        printer = self.init_printer(printer_ip, printer_port)
         try:
-            printer_ip = data.get('printer_ip', '192.168.1.100')
-            printer_port = data.get('printer_port', 9100)
-            
-            # Inicializar con configuración robusta
-            printer = self.init_printer(printer_ip, printer_port)
-            
-            # Imprimir prueba
-            self.safe_print_text(printer, "PRUEBA DE IMPRESION\n", 
+            self.safe_print_text(printer, "PRUEBA DE IMPRESION\n",
                             bold=True, double_height=True, align='center')
             self.safe_print_text(printer, "=" * 32 + "\n", align='center')
-            
+
             self.safe_print_text(printer, f"Raspberry Pi ID: {self.device_id}\n", align='center')
             self.safe_print_text(printer, f"Sucursal: {BRANCH_ID}\n", align='center')
             self.safe_print_text(printer, f"IP Local: {self.device_info['ip']}\n", align='center')
-            
+
             time_str = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
             self.safe_print_text(printer, f"Fecha: {time_str}\n", align='center')
-            
+
             self.safe_print_text(printer, "=" * 32 + "\n", align='center')
-            
+
             # Prueba de caracteres especiales
             self.safe_print_text(printer, "Test de caracteres:\n", bold=True, align='left')
             self.safe_print_text(printer, "Acentos: a e i o u\n", align='left')
             self.safe_print_text(printer, "Mayusculas: A E I O U\n", align='left')
             self.safe_print_text(printer, "Especiales: n N ! ? @ # $ % & * ( )\n", align='left')
             self.safe_print_text(printer, "Numeros: 0123456789\n", align='left')
-            
+
             self.safe_print_text(printer, "=" * 32 + "\n", align='center')
             self.safe_print_text(printer, "Impresora funcionando correctamente\n", align='center')
-            
+
             # Avanzar y cortar
             printer._raw(b'\n\n\n')
             printer.cut()
+        finally:
             printer.close()
-            
+
+    async def handle_test_print(self, data: Dict):
+        """Imprime página de prueba con configuración robusta"""
+        printer_ip = data.get('printer_ip', '192.168.1.100')
+        printer_port = data.get('printer_port', 9100)
+        try:
+            # ✅ Bloqueante -> hilo aparte, no congela el event loop
+            await asyncio.to_thread(self._print_test_page, printer_ip, printer_port)
             logger.info("✅ Prueba de impresión exitosa")
             await self.send_print_status('test', True, printer_ip)
-            
+
         except Exception as e:
             logger.error(f"❌ Error en prueba de impresión: {e}")
             await self.send_print_status('test', False, '', str(e))
-    
+
     async def send_device_info(self):
         """Envía información del dispositivo al servidor"""
         if self.is_websocket_open():
@@ -1764,31 +1918,39 @@ class SmartPrinterClient:
                     break
     
     async def listen(self):
-        """Escucha mensajes con detección mejorada de desconexión"""
+        """
+        Escucha mensajes con detección mejorada de desconexión.
+
+        Como handle_print_job ahora solo encola (no imprime), este loop deja
+        de estar en riesgo de bloquearse por una impresora lenta -- por eso
+        se puede bajar el timeout de silencio y verificar con ping desde el
+        primer corte, en vez de esperar 2 minutos para detectar una
+        conexión muerta.
+        """
         no_message_count = 0
-        
+
         try:
             while self.authenticated and self.websocket:
                 try:
-                    # Esperar mensaje con timeout más corto
+                    # Esperar mensaje con timeout corto
                     message = await asyncio.wait_for(
                         self.websocket.recv(),
-                        timeout=60  # Reducir a 60 segundos
+                        timeout=20
                     )
-                    
+
                     # Mensaje recibido OK
                     self.last_ping_time = datetime.now()
                     no_message_count = 0
                     await self.handle_message(message)
-                    
+
                 except asyncio.TimeoutError:
                     no_message_count += 1
-                    logger.warning(f"⏰ Sin mensajes por {no_message_count} minuto(s)")
-                    
-                    # Si no hay mensajes por 2 minutos, verificar conexión
-                    if no_message_count >= 2:
+                    logger.warning(f"⏰ Sin mensajes por {no_message_count * 20}s")
+
+                    # Verificar conexión desde el primer silencio (antes: 2 min)
+                    if no_message_count >= 1:
                         logger.warning("Verificando conexión...")
-                        
+
                         # Intentar ping
                         try:
                             pong = await self.websocket.ping()
@@ -1857,105 +2019,42 @@ class SmartPrinterClient:
     
     async def handle_print_job(self, data: Dict[str, Any]):
         """
-        Maneja trabajos de impresión - VERSIÓN MEJORADA
-        Detecta si es ADICIONAL o REIMPRESIÓN
+        Encola un trabajo de impresión en la cola de SU impresora y retorna
+        de inmediato -- no imprime aquí. Así el loop que recibe mensajes
+        (listen()) nunca se bloquea esperando a una impresora, sin importar
+        cuánto tarde esta en responder. El trabajo real lo hace
+        _execute_print_job(), corrido por el worker de esa impresora
+        (ver _get_printer_queue / _printer_worker).
         """
         try:
-            # Extraer información de la impresora
             printer_info = data.get('printer', {})
             printer_ip = printer_info.get('ip')
             printer_port = printer_info.get('port', 9100)
-            printer_name = printer_info.get('name', 'Desconocida')
-            paper_width = printer_info.get('paper_width', 80)
-            
-            # Datos del ticket
-            ticket_data = data.get('data', {})
-            ticket_type = ticket_data.get('type', 'ORDEN')
             job_id = data.get('job_id', 'unknown')
-            copy_number = data.get('copy_number', 1)
-            open_drawer = data.get('open_drawer', False)
-            
-            # NUEVO: Detectar si es ADICIONAL o REIMPRESIÓN
-            order_info = ticket_data.get('order', {})
-            is_additional = order_info.get('is_additional', False)
-            is_reprint = order_info.get('is_reprint', False)
-            
-            # LOGS DETALLADOS
-            logger.info("="*40)
-            logger.info(f"📥 TRABAJO DE IMPRESIÓN RECIBIDO")
-            logger.info(f"   Tipo: {ticket_type}")
-            logger.info(f"   Impresora: {printer_ip}:{printer_port}")
-            logger.info(f"   Job ID: {job_id}")
-            
-            if is_additional:
-                logger.info("   ⭐ PEDIDO ADICIONAL")
-            elif is_reprint:
-                logger.info("   🔄 REIMPRESIÓN")
-            else:
-                logger.info("   📝 PEDIDO NORMAL")
-            
-            # ✅ DETECTAR TIPO DE TICKET Y EJECUTAR FUNCIÓN CORRECTA
-            if ticket_type == 'CATEGORY_CANCELLED':
-                # ✅ NUEVO: Ticket de CANCELACIÓN
-                logger.info("   🚫 TICKET DE CANCELACIÓN")
-                success = await self.print_category_cancelled_ticket(
-                    printer_ip, printer_port, ticket_data, paper_width
-                )
-            elif ticket_type == 'CATEGORY':
-                success = await self.print_category_ticket(
-                    printer_ip, printer_port, ticket_data, paper_width
-                )
-            elif ticket_type in ['PRECUENTA', 'CUENTA', 'BOLETA', 'FACTURA', 'NOTA DE VENTA']:
-                success = await self.print_document(
-                    printer_ip, printer_port, ticket_data, paper_width, open_drawer=open_drawer
-                )
-            elif ticket_type == 'CASH_CLOSURE':
-                success = await self.print_cash_closure(
-                    printer_info.get('ip'),
-                    printer_info.get('port', 9100),
-                    ticket_data,
-                    printer_info.get('paper_width', 80)
-                )
-            elif ticket_type == 'PAYMENT':
-                 logger.info("   💵 TICKET DE PAGO/MOVIMIENTO")
-                 success = await self.print_payment_ticket(
-                     printer_ip, printer_port, ticket_data, paper_width
-                 )
-            elif ticket_type == 'EXPENSES':
-                logger.info("   📋 LISTA DE EGRESOS")
-                success = await self.print_expenses_report(
-                    printer_ip, printer_port, ticket_data, paper_width
-                )
-            elif ticket_type == 'EXPENSES_RANGE':
-                logger.info("   📋 REPORTE DE EGRESOS POR RANGO")
-                success = await self.print_expenses_range_report(
-                    printer_ip, printer_port, ticket_data, paper_width
-                )
-            else:
-                success = await self.print_generic_ticket(
-                    printer_ip, printer_port, ticket_data, paper_width
-                )
-            
-            # Reportar estado al servidor
-            await self.send_print_status(job_id, success, printer_name)
-            
-            if success:
-                logger.info(f"✅ IMPRESIÓN EXITOSA")
-            else:
-                logger.error(f"❌ IMPRESIÓN FALLIDA")
-            
-            logger.info("="*40)
-            
+
+            if not printer_ip:
+                logger.error(f"❌ Trabajo sin IP de impresora, se descarta: {data}")
+                await self.send_print_status(job_id, False, printer_info.get('name', 'Desconocida'), 'Sin IP de impresora')
+                return
+
+            if self._is_duplicate_job(job_id):
+                logger.warning(f"⚠️ job_id={job_id} ya procesado recientemente, se ignora (duplicado)")
+                return
+
+            queue = self._get_printer_queue(printer_ip, printer_port)
+            await queue.put(data)
+            logger.info(f"📥 Encolado job_id={job_id} para {printer_ip}:{printer_port} (cola: {queue.qsize()})")
+
         except Exception as e:
-            logger.error(f"❌ Error en handle_print_job: {e}")
+            logger.error(f"❌ Error en handle_print_job: {e}", exc_info=True)
             await self.send_print_status(
-                data.get('job_id', 'unknown'), 
-                False, 
+                data.get('job_id', 'unknown'),
+                False,
                 data.get('printer', {}).get('name', 'Unknown'),
                 str(e)
             )
-    
-    async def print_generic_ticket(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
+
+    def print_generic_ticket(self, ip: str, port: int, data: Dict, paper_width: int) -> bool:
         """Imprime un ticket genérico con configuración robusta"""
         try:
             # Inicializar con configuración robusta
@@ -2052,8 +2151,9 @@ class SmartPrinterClient:
                         logger.error("❌ No se pudo autenticar con el servidor")
                 
                 if self.running:
-                    # Backoff exponencial para reconexión
-                    wait_time = min(RECONNECT_DELAY * (2 ** min(self.connection_attempts - 1, 5)), 60)
+                    # Backoff exponencial para reconexión, acotado a RECONNECT_DELAY_MAX
+                    # (antes tope 60s -- un corte breve tardaba hasta un minuto en recuperarse)
+                    wait_time = min(RECONNECT_DELAY * (2 ** min(self.connection_attempts - 1, 5)), RECONNECT_DELAY_MAX)
                     logger.info(f"🔄 Reconectando en {wait_time} segundos...")
                     await asyncio.sleep(wait_time)
                 
@@ -2066,10 +2166,21 @@ class SmartPrinterClient:
                     await asyncio.sleep(RECONNECT_DELAY)
     
     async def shutdown(self):
-        """Cierra la conexión limpiamente"""
+        """Cierra la conexión y los workers de impresora limpiamente"""
         self.running = False
         if self.websocket:
             await self.websocket.close()
+
+        # Los workers están bloqueados en queue.get(); self.running=False no
+        # los despierta solo, hay que cancelarlos explícitamente.
+        for key, task in self.printer_workers.items():
+            task.cancel()
+        for key, task in self.printer_workers.items():
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
         logger.info("👋 Cliente detenido")
 
 # ========================================
@@ -2101,13 +2212,14 @@ if __name__ == "__main__":
         print("""
         ╔════════════════════════════════════════╗
         ║   Sistema de Impresión - Raspberry Pi  ║
-        ║     Cliente WebSocket v3.3 OPTIMIZADO  ║
+        ║     Cliente WebSocket v3.4 OPTIMIZADO  ║
         ║         Para 100+ Sucursales           ║
         ╚════════════════════════════════════════╝
         """)
         print("✅ Heartbeat cada 30 segundos")
         print("✅ Logs con rotación automática")
         print("✅ Detección de ADICIONALES y REIMPRESIÓN")
+        print("✅ Impresión en cola por impresora (no bloquea el WebSocket)")
         print(f"📁 Logs en: {LOG_FILE}\n")
         
         # Ejecutar
