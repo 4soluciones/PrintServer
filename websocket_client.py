@@ -103,6 +103,10 @@ MAX_RECONNECT_ATTEMPTS = 0
 # backend reenvíe (p.ej. por no haber recibido confirmación a tiempo).
 RECENT_JOB_IDS_MAXLEN = 200
 
+# Versión reportada en el heartbeat -- debe coincidir con el banner de main().
+# Permite confirmar desde el panel del backend qué sucursales ya tienen este parche.
+CLIENT_VERSION = "v3.4"
+
 # ========================================
 # LOGGING — ruta multiplataforma
 # ========================================
@@ -237,6 +241,14 @@ class SmartPrinterClient:
         # ✅ DEDUP DE job_id — evita reimprimir un trabajo que el backend
         # reenvíe (p.ej. por no haber recibido confirmación a tiempo).
         self._recent_job_ids: "OrderedDict[str, None]" = OrderedDict()
+
+        # ✅ TELEMETRÍA — se manda en cada heartbeat para que el panel de
+        # monitoreo del backend muestre el estado del cliente sin necesitar
+        # acceso remoto a esta PC (ver apps.printers.views.connections_monitor).
+        self._start_monotonic = time.monotonic()
+        self._prints_ok = 0
+        self._prints_error = 0
+        self._last_error: Optional[Dict[str, str]] = None
 
         # AGREGAR ESTOS LOGS PARA DEBUG
         logger.info("="*50)
@@ -401,6 +413,7 @@ class SmartPrinterClient:
                 )
 
             elapsed = time.monotonic() - start
+            self._note_print_result(success, printer_key, None if success else 'Fallo al imprimir')
             await self.send_print_status(job_id, success, printer_name)
             if success:
                 logger.info(f"✅ IMPRESIÓN EXITOSA [{printer_key}] en {elapsed:.1f}s")
@@ -411,7 +424,19 @@ class SmartPrinterClient:
         except Exception as e:
             elapsed = time.monotonic() - start
             logger.error(f"❌ Error en _execute_print_job [{printer_key}] tras {elapsed:.1f}s: {e}", exc_info=True)
+            self._note_print_result(False, printer_key, str(e))
             await self.send_print_status(job_id, False, printer_name, str(e))
+
+    def _note_print_result(self, success: bool, printer_key: str, error_message: Optional[str]):
+        """Actualiza los contadores/último error que se reportan en el heartbeat."""
+        if success:
+            self._prints_ok += 1
+        else:
+            self._prints_error += 1
+            self._last_error = {
+                'message': f"[{printer_key}] {error_message or 'Error desconocido'}"[:200],
+                'at': datetime.now().isoformat(),
+            }
 
     def init_printer(self, ip: str, port: int = 9100, max_retries: int = 25, retry_interval: float = 3.0) -> Network:
         """
@@ -1839,6 +1864,22 @@ class SmartPrinterClient:
             await self.websocket.send(json.dumps(message))
             logger.debug("📤 Información del dispositivo enviada")
     
+    def _status_snapshot(self) -> Dict[str, Any]:
+        """
+        Resumen del estado del cliente para el panel de monitoreo del backend
+        (apps.printers.views.connections_monitor): versión, colas de
+        impresión por impresora, contadores y último error. Se manda en cada
+        heartbeat -- un backend viejo que no lo espera simplemente lo ignora.
+        """
+        return {
+            'client_version': CLIENT_VERSION,
+            'uptime_seconds': int(time.monotonic() - self._start_monotonic),
+            'queues': {key: q.qsize() for key, q in self.printer_queues.items()},
+            'prints_ok': self._prints_ok,
+            'prints_error': self._prints_error,
+            'last_error': self._last_error,
+        }
+
     async def send_heartbeat(self):
         """Envía heartbeat al servidor - VERSIÓN MEJORADA"""
         try:
@@ -1846,11 +1887,12 @@ class SmartPrinterClient:
                 logger.error("❌ WebSocket cerrado en heartbeat")
                 self.authenticated = False
                 return False
-            
+
             # Enviar heartbeat directamente (SIN ensure_open)
             message = {
                 'type': 'heartbeat',
                 'device_info': self.device_info,
+                'status': self._status_snapshot(),
                 'timestamp': datetime.now().isoformat()
             }
             
