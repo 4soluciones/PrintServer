@@ -1518,15 +1518,30 @@ class SmartPrinterClient:
 
             self.safe_print_text(printer, f"TOTAL INGRESOS: S/ {total_income:>10.2f}", bold=True, align='left')
             self.safe_print_text(printer, f"TOTAL EGRESOS : S/ {total_expense:>10.2f}", bold=True, align='left')
-            if total_sales is not None:
-                self.safe_print_text(printer, f"TOTAL VENTAS  : S/ {total_sales:>10.2f}", bold=True, align='left')
 
             printer._raw(b'\n')
-            self.safe_print_text(printer, "TOTAL NETO:",
-                            bold=True, double_height=True, align='center')
-            self.safe_print_text(printer, f"S/ {net_total:.2f}",
-                            bold=True, double_height=True, align='center')
-            
+            if total_sales is not None:
+                # TOTAL NETO y TOTAL VENTAS lado a lado (ventas = solo pagos de
+                # una operación, independiente del método de pago; excluye
+                # ingresos manuales que sí forman parte de TOTAL NETO).
+                COL_WIDTH = 24
+                self.safe_print_text(
+                    printer,
+                    "TOTAL NETO".ljust(COL_WIDTH) + "TOTAL VENTAS",
+                    bold=True, double_height=True, align='left'
+                )
+                self.safe_print_text(
+                    printer,
+                    f"S/ {net_total:.2f}".ljust(COL_WIDTH) + f"S/ {total_sales:.2f}",
+                    bold=True, double_height=True, align='left'
+                )
+            else:
+                # Backend viejo sin total_sales (compat): layout original centrado.
+                self.safe_print_text(printer, "TOTAL NETO:",
+                                bold=True, double_height=True, align='center')
+                self.safe_print_text(printer, f"S/ {net_total:.2f}",
+                                bold=True, double_height=True, align='center')
+
             self.safe_print_text(printer, "=" * 48, align='left')
             
             # ========== PIE ==========
