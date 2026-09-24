@@ -1512,16 +1512,19 @@ class SmartPrinterClient:
             total_income = totals.get('total_income', 0)
             total_expense = totals.get('total_expense', 0)
             net_total = totals.get('net_total', 0)
-            
+            total_sales = totals.get('total_sales')  # None si el backend aún no lo manda (compat)
+
             self.safe_print_text(printer, "=" * 48, align='left')
-            
+
             self.safe_print_text(printer, f"TOTAL INGRESOS: S/ {total_income:>10.2f}", bold=True, align='left')
             self.safe_print_text(printer, f"TOTAL EGRESOS : S/ {total_expense:>10.2f}", bold=True, align='left')
-            
+            if total_sales is not None:
+                self.safe_print_text(printer, f"TOTAL VENTAS  : S/ {total_sales:>10.2f}", bold=True, align='left')
+
             printer._raw(b'\n')
-            self.safe_print_text(printer, "TOTAL NETO:", 
+            self.safe_print_text(printer, "TOTAL NETO:",
                             bold=True, double_height=True, align='center')
-            self.safe_print_text(printer, f"S/ {net_total:.2f}", 
+            self.safe_print_text(printer, f"S/ {net_total:.2f}",
                             bold=True, double_height=True, align='center')
             
             self.safe_print_text(printer, "=" * 48, align='left')
