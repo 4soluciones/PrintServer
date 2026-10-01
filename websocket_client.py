@@ -1340,13 +1340,24 @@ class SmartPrinterClient:
             
             self.safe_print_text(printer, f"TOTAL INGRESOS: S/ {total_income:>10.2f}", bold=True, align='left')
             self.safe_print_text(printer, f"TOTAL EGRESOS : S/ {total_expense:>10.2f}", bold=True, align='left')
-            
+
+            # TOTAL NETO y TOTAL VENTAS lado a lado (ventas = solo pagos de
+            # una operación, independiente del método de pago; excluye
+            # ingresos manuales que sí forman parte de TOTAL NETO).
+            total_sales = totals.get('total_sales', 0)
             printer._raw(b'\n')
-            self.safe_print_text(printer, "TOTAL NETO:", 
-                            bold=True, double_height=True, align='center')
-            self.safe_print_text(printer, f"S/ {net_total:.2f}", 
-                            bold=True, double_height=True, align='center')
-            
+            COL_WIDTH = 24
+            self.safe_print_text(
+                printer,
+                "TOTAL NETO".ljust(COL_WIDTH) + "TOTAL VENTAS",
+                bold=True, double_height=True, align='left'
+            )
+            self.safe_print_text(
+                printer,
+                f"S/ {net_total:.2f}".ljust(COL_WIDTH) + f"S/ {total_sales:.2f}",
+                bold=True, double_height=True, align='left'
+            )
+
             self.safe_print_text(printer, "=" * 48, align='left')
             
             # ========== PIE ==========
