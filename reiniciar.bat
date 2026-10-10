@@ -21,13 +21,21 @@ if /I not "%SOURCE_DIR%"=="%INSTALL_DIR%\" (
         pause
         exit /b 1
     )
-    copy /Y "%SOURCE_DIR%config.ini" "%INSTALL_DIR%\config.ini" >nul
-    copy /Y "%SOURCE_DIR%websocket_client.py" "%INSTALL_DIR%\websocket_client.py" >nul
-    copy /Y "%SOURCE_DIR%requirements.txt" "%INSTALL_DIR%\requirements.txt" >nul
+    rem Sincroniza todo el proyecto (codigo, scripts .bat/.sh, _scripts\*.ps1, etc.)
+    rem EXCEPTO: .git/.idea (no pertenecen al destino), logs (no mezclar con los
+    rem del destino) y config.ini (credenciales propias de cada instalacion;
+    rem nunca se debe pisar con la copia de desarrollo).
+    robocopy "%SOURCE_DIR%." "%INSTALL_DIR%" /E /XD .git .idea logs /XF config.ini /NFL /NDL /NJH /NJS
+    if %errorLevel% GEQ 8 (
+        echo.
+        echo ERROR: fallo al copiar archivos ^(robocopy codigo %errorLevel%^).
+        pause
+        exit /b 1
+    )
     echo Listo.
 )
 
-echo Reiniciando el sistema de impresion (aplica cambios de config.ini o del codigo)...
+echo Reiniciando el sistema de impresion (aplica cambios del codigo/scripts; config.ini no se toca)...
 rem IMPORTANTE: schtasks /End no mata el proceso Python real dentro de WSL2,
 rem solo el lanzador de Windows. Hay que matarlo explicitamente o el
 rem proceso viejo (con el codigo viejo en memoria) sigue corriendo y puede
