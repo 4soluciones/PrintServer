@@ -760,13 +760,13 @@ class SmartPrinterClient:
                 # CANT + DESCRIPCION
                 qty_str = f"{qty:.0f}".ljust(CANT_WIDTH)
                 self.safe_print_text(printer, f"{qty_str}{product}",
-                                   bold=True, double_height=True, align='left')
+                                   bold=True, double_height=True, double_width=True, align='left')
 
                 # NOTA si existe (alineada bajo la columna DESCRIPCION)
                 if item.get('notes'):
                     notes = clean_text(item['notes'])
                     notes = notes.upper()
-                    self.safe_print_text(printer, f"{' ' * CANT_WIDTH}NOTA : {notes}", align='left')
+                    self.safe_print_text(printer, f"{' ' * CANT_WIDTH}NOTA : {notes}", bold=True, align='left')
 
                 # Línea separadora entre platos
                 # if item_number < len(items):
@@ -883,7 +883,15 @@ class SmartPrinterClient:
                 self.safe_print_text(printer, cancellation_reason, align='left')
             
             # LÍNEA SEPARADORA
-            self.safe_print_text(printer, "="*40, align='center')
+            self.safe_print_text(printer, "-"*40, align='center')
+
+            # ENCABEZADO DE COLUMNAS
+            CANT_WIDTH = 5
+            self.safe_print_text(printer, ("CANT".ljust(CANT_WIDTH + 20) + "DESCRIPCION").upper(),
+                                bold=True, align='left')
+
+            # LÍNEA SEPARADORA
+            self.safe_print_text(printer, "-"*40, align='center')
             
             # ============================================
             # ITEMS CANCELADOS CON PREFIJO [X]
@@ -895,9 +903,11 @@ class SmartPrinterClient:
                 qty = item.get('quantity', 1)
                 product = clean_text(item.get('product_name', ''))
                 
-                # ITEM CANCELADO - Prefijo [X]
-                self.safe_print_text(printer, f"[X] PLATO {item_number}: {qty:.0f}X {product}", 
-                                bold=True, double_height=True, align='left')
+                # ITEM CANCELADO
+                # CANT + DESCRIPCION
+                qty_str = f"{qty:.0f}".ljust(CANT_WIDTH)
+                self.safe_print_text(printer, f"{qty_str}{product}",
+                                bold=True, double_height=True, double_width=True, align='left')
                 
                 # NOTA si existe
                 if item.get('notes'):
