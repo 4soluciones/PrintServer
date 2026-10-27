@@ -1018,7 +1018,12 @@ class SmartPrinterClient:
             
             # TIPO DE DOCUMENTO
             doc_type = clean_text(data.get('type', 'CUENTA'))
-            doc_info = data.get('document', {})            
+            doc_info = data.get('document', {})
+            doc_code = clean_text(doc_info.get('code', ''))
+            if doc_code == '03':
+                doc_type = 'BOLETA ELECTRÓNICA'
+            elif doc_code == '01':
+                doc_type = 'FACTURA ELECTRÓNICA'
             doc_issued = clean_text(doc_info.get('invoice', ''))
             doc_number = clean_text(doc_info.get('number', ''))
             
