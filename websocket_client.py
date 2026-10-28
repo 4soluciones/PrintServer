@@ -1145,17 +1145,7 @@ class SmartPrinterClient:
                 printer._raw(line.encode('cp850', errors='replace'))
                 printer._raw(b'\n')
             
-            # 1) OP. Gravadas (base imponible) o Subtotal
-            base = amounts.get('total_taxable') or amounts.get('subtotal')
-            if base is not None and base > 0:
-                print_amount_line("OP. Gravadas", float(base))
-            
-            # 2) IGV (default 10.5% para restaurantes)
-            igv_percent = amounts.get('igv_percent', 10.5)
-            if amounts.get('igv') is not None:
-                print_amount_line("IGV (%.1f%%)" % igv_percent, float(amounts['igv']))
-            
-            # 3) Descuento (con % si viene discount_percent)
+            # 1) Descuento (suma de descuento global + por ítem, con % si viene discount_percent)
             discount = amounts.get('discount', 0) or 0
             if discount > 0:
                 pct = amounts.get('discount_percent')
@@ -1163,6 +1153,16 @@ class SmartPrinterClient:
                     print_amount_line("Descuento (%.0f%%)" % pct, float(discount), is_negative=True)
                 else:
                     print_amount_line("Descuento", float(discount), is_negative=True)
+
+            # 2) OP. Gravadas (base imponible) o Subtotal
+            base = amounts.get('total_taxable') or amounts.get('subtotal')
+            if base is not None and base > 0:
+                print_amount_line("OP. Gravadas", float(base))
+
+            # 3) IGV (default 10.5% para restaurantes)
+            igv_percent = amounts.get('igv_percent', 10.5)
+            if amounts.get('igv') is not None:
+                print_amount_line("IGV (%.1f%%)" % igv_percent, float(amounts['igv']))
             
             # Línea separadora antes del total
             self.safe_print_text(printer, "=" * 48, align='left')
