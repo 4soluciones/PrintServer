@@ -734,6 +734,12 @@ class SmartPrinterClient:
                 service = clean_text(order_info.get('service_type'))
                 self.safe_print_text(printer, f"Servicio: {service}", bold=True, align='left')
 
+            # NOTAS GENERALES si existen
+            if data.get('notes'):
+                notes = clean_text(data['notes'])
+                self.safe_print_text(printer, f"NOTAS: {notes}", bold=True, align='left')
+                self.safe_print_text(printer, "-"*40, align='center')
+            
             # LÍNEA SEPARADORA
             self.safe_print_text(printer, "-"*48, align='center')
 
@@ -775,13 +781,7 @@ class SmartPrinterClient:
                 item_number += 1
 
             # LÍNEA SEPARADORA DOBLE
-            self.safe_print_text(printer, "="*48, align='center')
-
-            # NOTAS GENERALES si existen
-            if data.get('notes'):
-                notes = clean_text(data['notes'])
-                self.safe_print_text(printer, f"NOTAS: {notes}", bold=True, align='left')
-                self.safe_print_text(printer, "-"*40, align='center')
+            # self.safe_print_text(printer, "="*48, align='center')
 
             # PIE - Repite PISO/MESA para identificar el ticket
             mesa_footer = f"*** {floor}"
@@ -1072,7 +1072,7 @@ class SmartPrinterClient:
             # Observación: en los 3 documentos (Factura/Boleta/Nota de Venta), solo si existe
             if data.get('notes'):
                 obs = clean_text(data['notes'])
-                self.safe_print_text(printer, f"Obs: {obs}", align='left')
+                self.safe_print_text(printer, f"Obs: {obs}", bold=True, align='left')
 
             self.safe_print_text(printer, "=" * 48, align='left')
 
