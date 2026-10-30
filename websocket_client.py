@@ -12,6 +12,7 @@ import logging
 import logging.handlers
 import socket
 import time
+import textwrap
 import uuid
 import os
 import sys
@@ -739,9 +740,6 @@ class SmartPrinterClient:
                 notes = clean_text(data['notes'])
                 self.safe_print_text(printer, f"NOTAS: {notes}", bold=True, align='left')
                 self.safe_print_text(printer, "-"*40, align='center')
-            
-            # LÍNEA SEPARADORA
-            self.safe_print_text(printer, "-"*48, align='center')
 
             # ENCABEZADO DE COLUMNAS
             CANT_WIDTH = 5
@@ -763,10 +761,16 @@ class SmartPrinterClient:
                 # if item.get('is_reprint'):
                 #     self.safe_print_text(printer, "(REIMPRESION)", align='right')
 
-                # CANT + DESCRIPCION
+                # CANT + DESCRIPCION (si no entra en una línea, tabula las
+                # siguientes bajo la columna DESCRIPCION, no bajo CANT)
                 qty_str = f"{qty:.0f}".ljust(CANT_WIDTH)
-                self.safe_print_text(printer, f"{qty_str}{product}",
+                desc_width_dw = (24 if paper_width == 80 else 16) - CANT_WIDTH
+                desc_lines = textwrap.wrap(product, width=desc_width_dw) or ['']
+                self.safe_print_text(printer, f"{qty_str}{desc_lines[0]}",
                                    bold=True, double_height=True, double_width=True, align='left')
+                for extra_line in desc_lines[1:]:
+                    self.safe_print_text(printer, f"{' ' * CANT_WIDTH}{extra_line}",
+                                       bold=True, double_height=True, double_width=True, align='left')
 
                 # NOTA si existe (alineada bajo la columna DESCRIPCION)
                 if item.get('notes'):
@@ -783,6 +787,9 @@ class SmartPrinterClient:
             # LÍNEA SEPARADORA DOBLE
             # self.safe_print_text(printer, "="*48, align='center')
 
+            # LÍNEA SEPARADORA
+            self.safe_print_text(printer, "-"*48, align='center')
+            
             # PIE - Repite PISO/MESA para identificar el ticket
             mesa_footer = f"*** {floor}"
             if floor:
