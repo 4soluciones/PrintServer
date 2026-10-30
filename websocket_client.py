@@ -737,12 +737,12 @@ class SmartPrinterClient:
 
             # NOTAS GENERALES si existen
             if data.get('notes'):
-                notes = clean_text(data['notes'])
-                self.safe_print_text(printer, f"NOTAS: {notes}", bold=True, align='left')
+                notes = clean_text(data['notes']).upper()
+                self.safe_print_text(printer, f"NOTAS: {notes}", bold=True, double_height=True, align='left')
                 self.safe_print_text(printer, "-"*40, align='center')
 
             # ENCABEZADO DE COLUMNAS
-            CANT_WIDTH = 5
+            CANT_WIDTH = 2
             self.safe_print_text(printer, ("CANT".ljust(CANT_WIDTH + 20) + "DESCRIPCION").upper(),
                                bold=True, align='left')
 
