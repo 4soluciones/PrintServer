@@ -1062,10 +1062,12 @@ class SmartPrinterClient:
                     cust_addr = clean_text(customer['address'])
                     self.safe_print_text(printer, f"Dirección: {cust_addr}", align='left')
             
-            # Mesa y mesero
+            # Mesa y mesero (igual que en print_category_ticket: PISO - MESA)
             if data.get('table'):
                 table = clean_text(data['table'])
-                self.safe_print_text(printer, f"Mesa: {table}", align='left')
+                floor = clean_text(data.get('floor', '')) if data.get('floor') else ''
+                mesa_label = f"{floor} - {table}" if floor else table
+                self.safe_print_text(printer, f"Mesa: {mesa_label}", align='left')
             
             if data.get('waiter'):
                 waiter = clean_text(data['waiter'])
