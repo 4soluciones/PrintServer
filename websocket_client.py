@@ -1067,7 +1067,7 @@ class SmartPrinterClient:
                 table = clean_text(data['table'])
                 floor = clean_text(data.get('floor', '')) if data.get('floor') else ''
                 mesa_label = f"{floor} - {table}" if floor else table
-                self.safe_print_text(printer, f"Mesa: {mesa_label}", align='left')
+                self.safe_print_text(printer, f"Piso y Mesa: {mesa_label}", align='left')
             
             if data.get('waiter'):
                 waiter = clean_text(data['waiter'])
