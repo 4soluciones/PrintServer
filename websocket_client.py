@@ -1120,13 +1120,6 @@ class SmartPrinterClient:
                 printer._raw(line.encode('cp850', errors='replace'))
                 printer._raw(b'\n')
                 
-                # Notas del item si existen (con indentación)
-                if item.get('notes'):
-                    notes = clean_text(item['notes'])
-                    if len(notes) > 40:
-                        notes = notes[:40]
-                    self.safe_print_text(printer, f"      > {notes}", align='left')
-
                 # Componentes de promoción (MENÚ EJECUTIVO, etc.)
                 for comp in item.get('combo_components', []):
                     comp_name = clean_text(comp.get('name', ''))
