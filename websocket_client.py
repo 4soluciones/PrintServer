@@ -685,13 +685,7 @@ class SmartPrinterClient:
                 printer.text(f"*** {header_label} ***\n")
                 printer._raw(b'\x1B\x21\x00')  # Normal
                 printer._raw(b'\n')
-            if is_additional:
-                printer._raw(b'\x1B\x21\x30')  # Doble altura y ancho
-                printer._raw(b'\x1B\x61\x01')  # Center
-                printer.text("*** PEDIDO ADICIONAL ***\n")
-                printer._raw(b'\x1B\x21\x00')  # Normal
-                printer._raw(b'\n')
-            elif is_reprint:
+            if is_reprint:
                 printer._raw(b'\x1B\x21\x08')  # Bold
                 printer._raw(b'\x1B\x61\x01')  # Center
                 printer.text("--- REIMPRESION ---\n")
@@ -797,10 +791,6 @@ class SmartPrinterClient:
             mesa_footer += " ***"
             self.safe_print_text(printer, mesa_footer.upper(), bold=True, align='center')
 
-            # Si es adicional, agregar nota al final
-            if is_additional:
-                self.safe_print_text(printer, "** ADICIONAL **", bold=True, align='center')
-                        
             # Avanzar papel y cortar
             printer._raw(b'\x1B\x64\x05')  # ESC d 5 = Avanza 5 líneas
             import time
