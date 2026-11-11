@@ -2,6 +2,9 @@
 """
 Cliente WebSocket - Sistema de Impresion para Restaurante
 Versión multiplataforma: Windows, Linux, Raspberry Pi
+
+GAVETA_EMERGENCIA=2026-11-10: abre gaveta sin ticket (OPEN_DRAWER / drawer_only / CUENTA+skip_print).
+Este archivo debe copiarse a C:\\PrintServer\\websocket_client.py (ahi corre el servicio).
 """
 
 import asyncio
@@ -357,12 +360,23 @@ class SmartPrinterClient:
         printer_name = printer_info.get('name', 'Desconocida')
         paper_width = printer_info.get('paper_width', 80)
 
-        ticket_data = data.get('data', {})
-        ticket_type = ticket_data.get('type', 'ORDEN')
+        ticket_data = data.get('data', {}) or {}
+        ticket_type = str(ticket_data.get('type', 'ORDEN') or 'ORDEN').strip()
         job_id = data.get('job_id', 'unknown')
-        open_drawer = data.get('open_drawer', False)
+        open_drawer = bool(
+            data.get('open_drawer')
+            or ticket_data.get('open_drawer')
+            or ticket_data.get('openDrawer')
+        )
+        drawer_only = (
+            ticket_type.upper() == 'OPEN_DRAWER'
+            or bool(ticket_data.get('drawer_only'))
+            or bool(ticket_data.get('skip_print'))
+        )
 
-        order_info = ticket_data.get('order', {})
+        order_info = ticket_data.get('order') or {}
+        if not isinstance(order_info, dict):
+            order_info = {}
         is_additional = order_info.get('is_additional', False)
         is_reprint = order_info.get('is_reprint', False)
 
@@ -370,17 +384,26 @@ class SmartPrinterClient:
         logger.info(f"📥 TRABAJO DE IMPRESIÓN [{printer_key}]")
         logger.info(f"   Tipo: {ticket_type}")
         logger.info(f"   Job ID: {job_id}")
+        logger.info(f"   open_drawer={open_drawer} drawer_only={drawer_only}")
         if is_additional:
             logger.info("   ⭐ PEDIDO ADICIONAL")
         elif is_reprint:
             logger.info("   🔄 REIMPRESIÓN")
+
+        document_types_kick_drawer = {
+            'PRECUENTA', 'CUENTA', 'BOLETA', 'FACTURA', 'NOTA DE VENTA',
+        }
 
         try:
             # ✅ Todas las print_* son funciones bloqueantes normales (no
             # async): se ejecutan en un hilo aparte con asyncio.to_thread
             # para no congelar el event loop (pings, heartbeat, otros
             # mensajes) mientras se imprime.
-            if ticket_type == 'CATEGORY_CANCELLED':
+            if drawer_only:
+                success = await asyncio.to_thread(
+                    self.open_drawer_only, printer_ip, printer_port
+                )
+            elif ticket_type == 'CATEGORY_CANCELLED':
                 success = await asyncio.to_thread(
                     self.print_category_cancelled_ticket, printer_ip, printer_port, ticket_data, paper_width
                 )
@@ -412,6 +435,15 @@ class SmartPrinterClient:
                 success = await asyncio.to_thread(
                     self.print_generic_ticket, printer_ip, printer_port, ticket_data, paper_width
                 )
+
+            # Si el tipo no abre gaveta por sí (comanda, pago, genérico), el flag
+            # open_drawer del mensaje WebSocket igual dispara el pulso.
+            already_kicked = drawer_only or ticket_type in document_types_kick_drawer
+            if open_drawer and not already_kicked:
+                kicked = await asyncio.to_thread(
+                    self.open_drawer_only, printer_ip, printer_port
+                )
+                success = bool(success) and bool(kicked)
 
             elapsed = time.monotonic() - start
             self._note_print_result(success, printer_key, None if success else 'Fallo al imprimir')
@@ -580,6 +612,38 @@ class SmartPrinterClient:
             # ✅ CACHEAR que esta impresora NO tiene buzzer
             self.printers_with_beep[ip] = False
             return False
+
+    def open_drawer_only(self, ip: str, port: int) -> bool:
+        """Emergencia: abre la gaveta sin imprimir ticket ni venta."""
+        printer = None
+        try:
+            import time as _time
+            logger.info(f"💰 OPEN_DRAWER emergencia (solo pulso) → {ip}:{port}")
+            printer = self.init_printer(ip, port)
+            printer._raw(b'\x1B\x40')
+            ok = self.open_cash_drawer(printer, ip)
+            # Pin 5 por si la gaveta está en el otro conector RJ11
+            printer._raw(bytes([0x1B, 0x70, 0x01, 0x19, 0x7D]))
+            _time.sleep(0.1)
+            printer._raw(bytes([0x1B, 0x70, 0x01, 0x32, 0xFA]))
+            try:
+                if hasattr(printer, 'cashdraw'):
+                    printer.cashdraw(2)
+                    printer.cashdraw(5)
+            except Exception:
+                pass
+            printer._raw(b'\n')
+            _time.sleep(0.3)
+            return ok
+        except Exception as e:
+            logger.error(f"❌ Error abriendo gaveta (solo pulso) en {ip}: {e}", exc_info=True)
+            return False
+        finally:
+            if printer:
+                try:
+                    printer.close()
+                except Exception as e:
+                    logger.error(f"⚠️ Error cerrando impresora tras OPEN_DRAWER: {e}")
 
     def open_cash_drawer(self, printer: Network, ip: str) -> bool:
             """Abre la gaveta de dinero conectada a la impresora (Advanced)."""
@@ -2046,6 +2110,7 @@ class SmartPrinterClient:
             # Router de mensajes
             handlers = {
                 'print': self.handle_print_job,
+                'open_drawer': self.handle_print_job,
                 'test_print': self.handle_test_print,
                 'heartbeat_ack': self.handle_heartbeat_ack,
                 'get_status': self.handle_status_request,
@@ -2103,6 +2168,18 @@ class SmartPrinterClient:
                 logger.error(f"❌ Trabajo sin IP de impresora, se descarta: {data}")
                 await self.send_print_status(job_id, False, printer_info.get('name', 'Desconocida'), 'Sin IP de impresora')
                 return
+
+            ticket = data.get('data') or {}
+            if (
+                str(ticket.get('type') or '').upper() == 'OPEN_DRAWER'
+                or data.get('action') == 'open_drawer'
+                or ticket.get('drawer_only')
+                or data.get('open_drawer')
+            ):
+                logger.info(
+                    f"💰 EMERGENCIA GAVETA encolada → {printer_ip}:{printer_port} "
+                    f"job_id={job_id} type={ticket.get('type')} open_drawer={data.get('open_drawer')}"
+                )
 
             if self._is_duplicate_job(job_id):
                 logger.warning(f"⚠️ job_id={job_id} ya procesado recientemente, se ignora (duplicado)")
