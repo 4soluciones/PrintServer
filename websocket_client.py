@@ -1146,15 +1146,21 @@ class SmartPrinterClient:
                 else:
                     print_amount_line("Descuento", float(discount), is_negative=True)
 
-            # 2) OP. Gravadas (base imponible) o Subtotal
-            base = amounts.get('total_taxable') or amounts.get('subtotal')
-            if base is not None and base > 0:
-                print_amount_line("OP. Gravadas", float(base))
+            # OP. Gravadas e IGV solo en comprobantes electrónicos (Boleta/Factura).
+            # Precuenta y Nota de Venta muestran únicamente el total general.
+            doc_type_upper = doc_type.upper()
+            is_electronic = doc_code in ('01', '03') or doc_type_upper.startswith(('BOLETA', 'FACTURA'))
 
-            # 3) IGV (default 10.5% para restaurantes)
-            igv_percent = amounts.get('igv_percent', 10.5)
-            if amounts.get('igv') is not None:
-                print_amount_line("IGV (%.1f%%)" % igv_percent, float(amounts['igv']))
+            if is_electronic:
+                # 2) OP. Gravadas (base imponible) o Subtotal
+                base = amounts.get('total_taxable') or amounts.get('subtotal')
+                if base is not None and base > 0:
+                    print_amount_line("OP. Gravadas", float(base))
+
+                # 3) IGV (default 10.5% para restaurantes)
+                igv_percent = amounts.get('igv_percent', 10.5)
+                if amounts.get('igv') is not None:
+                    print_amount_line("IGV (%.1f%%)" % igv_percent, float(amounts['igv']))
             
             # Línea separadora antes del total
             self.safe_print_text(printer, "=" * 48, align='left')
