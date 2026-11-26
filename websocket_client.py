@@ -853,7 +853,8 @@ class SmartPrinterClient:
             if floor:
                 mesa_footer += f" - {table}"
             mesa_footer += " ***"
-            self.safe_print_text(printer, mesa_footer.upper(), bold=True, align='center')
+            self.safe_print_text(printer, mesa_footer.upper(),
+                                  double_height=True, double_width=True, align='center')
 
             # Avanzar papel y cortar
             printer._raw(b'\x1B\x64\x05')  # ESC d 5 = Avanza 5 líneas
